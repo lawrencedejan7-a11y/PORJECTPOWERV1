@@ -1,6 +1,7 @@
 package ph.edu.comteq.porjectpowerv1
 
 import android.os.Bundle
+import androidx.core.content.edit
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
@@ -8,8 +9,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
@@ -19,22 +25,78 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.util.Calendar
 
+// ---------- Colors ----------
 val DarkBackground = Color(0xFF0F0E17)
-val DarkCardColor = Color(0xFF1E1B2E)
+val DarkCardColor = Color(0xFF1B1930)
 val DarkCardElevated = Color(0xFF28243D)
 val PurpleAccent = Color(0xFF9D4EDD)
 val PurpleLight = Color(0xFFC77DFF)
+val PurpleDeep = Color(0xFF5A189A)
+val FlameOrange = Color(0xFFFF9F1C)
 val TextWhite = Color(0xFFFFFFFF)
 val TextGray = Color(0xFF9CA3AF)
 val BorderColor = Color(0xFF332E4C)
+
+// ---------- Power scale ----------
+data class PowerRank(val name: String, val min: Int, val max: Int)
+
+val powerRanks = listOf(
+    PowerRank("Knight", 10, 50),
+    PowerRank("Gladiator", 60, 100),
+    PowerRank("Warrior", 110, 180),
+    PowerRank("Tank", 180, 250),
+    PowerRank("Demigod", 260, 350),
+    PowerRank("Eternal", 360, 450),
+    PowerRank("Olympian", 450, 650),
+    PowerRank("Viltrumite", 660, 750),
+    PowerRank("Kryptonian", 760, 850),
+    PowerRank("Saiyan", 850, 1000)
+)
+
+
+fun rankFor(total: Int): PowerRank? = powerRanks.lastOrNull { total >= it.min }
+
+fun nextRankFor(total: Int): PowerRank? = powerRanks.firstOrNull { it.min > total }
+
+fun rankProgress(total: Int): Float {
+    val current = rankFor(total)
+    val next = nextRankFor(total)
+    return when {
+        next == null -> ((total - 850) / 150f).coerceIn(0f, 1f)
+        current == null -> (total / next.min.toFloat()).coerceIn(0f, 1f)
+        else -> ((total - current.min).toFloat() / (next.min - current.min)).coerceIn(0f, 1f)
+    }
+}
+
+// Each rank has its own icon
+// common logo Unranked user
+fun rankIcon(rank: PowerRank?): Int = when (rank?.name) {
+    "Knight" -> R.drawable.knight
+    "Gladiator" -> R.drawable.gladiator
+    "Warrior" -> R.drawable.warrior
+    "Tank" -> R.drawable.tank
+    "Demigod" -> R.drawable.demigod
+    "Eternal" -> R.drawable.eternal
+    "Olympian" -> R.drawable.olympian
+    "Viltrumite" -> R.drawable.viltrumempirelogo
+    "Kryptonian" -> R.drawable.kyrptonian
+    "Saiyan" -> R.drawable.saiyan
+    else -> R.drawable.common // Unranked (below 10 lbs)
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,49 +107,83 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+
+private data class NavItem(val label: String, val icon: ImageVector)
+
+@Composable
+fun AppCard(
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val shape = RoundedCornerShape(20.dp)
+    val colors = CardDefaults.cardColors(containerColor = DarkCardColor)
+    val border = Modifier.border(1.dp, BorderColor, shape)
+    if (onClick != null) {
+        Card(onClick = onClick, shape = shape, colors = colors, modifier = modifier.then(border), content = content)
+    } else {
+        Card(shape = shape, colors = colors, modifier = modifier.then(border), content = content)
+    }
+}
+
+@Composable
+fun IconBadge(icon: ImageVector, tint: Color = PurpleLight, size: Int = 44) {
+    Box(
+        modifier = Modifier
+            .size(size.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(tint.copy(alpha = 0.15f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size((size * 0.5f).dp))
+    }
+}
+
+@Composable
+fun ScreenHeader(title: String, subtitle: String) {
+    Column(modifier = Modifier.padding(bottom = 20.dp)) {
+        Text(title, color = TextWhite, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(subtitle, color = TextGray, fontSize = 14.sp)
+    }
+}
+
+
 @Composable
 fun AppUiShell() {
-    var currentTab by remember { mutableIntStateOf(1) }
+    var currentTab by remember { mutableIntStateOf(0) }
+
+    // Saved total is remembered on the device
+    val context = LocalContext.current
+    val inPreview = LocalInspectionMode.current
+    val prefs = remember { context.getSharedPreferences("power_prefs", android.content.Context.MODE_PRIVATE) }
+    var savedTotal by remember { mutableIntStateOf(if (inPreview) 0 else prefs.getInt("saved_total", 0)) }
+
+    val navItems = listOf(
+        NavItem("Home", Icons.Default.Home),
+        NavItem("Quests", Icons.Default.EmojiEvents),
+        NavItem("Workout", Icons.Default.FitnessCenter),
+        NavItem("History", Icons.Default.History)
+    )
 
     Scaffold(
         containerColor = DarkBackground,
         bottomBar = {
-            Surface(
-                color = DarkCardColor,
-                modifier = Modifier.fillMaxWidth().height(65.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxSize(),
-                    horizontalArrangement = Arrangement.SpaceAround,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Button(
-                        onClick = { currentTab = 1 },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (currentTab == 1) PurpleAccent else Color.Transparent
+            NavigationBar(containerColor = DarkCardColor, tonalElevation = 0.dp) {
+                navItems.forEachIndexed { index, item ->
+                    NavigationBarItem(
+                        selected = currentTab == index,
+                        onClick = { currentTab = index },
+                        icon = { Icon(item.icon, contentDescription = item.label) },
+                        label = { Text(item.label, fontSize = 11.sp) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = TextWhite,
+                            selectedTextColor = PurpleLight,
+                            indicatorColor = PurpleAccent,
+                            unselectedIconColor = TextGray,
+                            unselectedTextColor = TextGray
                         )
-                    ) { Text("Dashboard", color = TextWhite, fontSize = 11.sp) }
-
-                    Button(
-                        onClick = { currentTab = 2 },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (currentTab == 2) PurpleAccent else Color.Transparent
-                        )
-                    ) { Text("Quests", color = TextWhite, fontSize = 11.sp) }
-
-                    Button(
-                        onClick = { currentTab = 3 },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (currentTab == 3) PurpleAccent else Color.Transparent
-                        )
-                    ) { Text("Workout", color = TextWhite, fontSize = 11.sp) }
-
-                    Button(
-                        onClick = { currentTab = 4 },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (currentTab == 4) PurpleAccent else Color.Transparent
-                        )
-                    ) { Text("History", color = TextWhite, fontSize = 11.sp) }
+                    )
                 }
             }
         }
@@ -97,330 +193,495 @@ fun AppUiShell() {
                 .padding(innerPadding)
                 .fillMaxSize()
                 .background(DarkBackground)
-                .padding(16.dp)
         ) {
             when (currentTab) {
-                1 -> DashboardUi()
-                2 -> QuestBoardUi()
-                3 -> PreSavedWorkoutUi()
-                4 -> ProgressHistoryUi()
+                0 -> DashboardUi(totalLifts = savedTotal, onOpenWorkouts = { currentTab = 2 })
+                1 -> QuestBoardUi(onSave = { total ->
+                    savedTotal = total
+                    if (!inPreview) prefs.edit { putInt("saved_total", total) }
+                })
+                2 -> PreSavedWorkoutUi()
+                3 -> ProgressHistoryUi()
             }
         }
     }
 }
 
-// For dashboard
+// Dashboard
 @Composable
-fun DashboardUi() {
-    Column {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text("Project Power", color = TextWhite, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            }
-        }
+fun DashboardUi(totalLifts: Int, onOpenWorkouts: () -> Unit) {
+    val rank = rankFor(totalLifts)
+    val nextRank = nextRankFor(totalLifts)
+    val progress = rankProgress(totalLifts)
 
-        Spacer(modifier = Modifier.height(16.dp))
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 20.dp)
+    ) {
 
-        Box(
-            modifier = Modifier.fillMaxWidth(),
-            contentAlignment = Alignment.Center
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(120.dp)
-                    .clip(CircleShape)
-                    .background(DarkCardColor)
-                    .border(2.dp, PurpleAccent, CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Image(
-                    painter = painterResource(id = R.drawable.viltrumempirelogo),
-                    contentDescription = "Viltrum Empire Rank Logo",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-        }
+        Text("Project Power", color = TextWhite, fontSize = 28.sp, fontWeight = FontWeight.Bold)
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
+        // Rank hero card
         Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = DarkCardColor),
-            modifier = Modifier.fillMaxWidth().border(1.dp, BorderColor, RoundedCornerShape(20.dp))
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text("CURRENT RANK", color = PurpleLight, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                Text("Saiyan Tier (850-1000 lbs)", color = TextWhite, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(12.dp))
-                LinearProgressIndicator(
-                    progress = { 0.85f },
-                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
-                    color = PurpleAccent,
-                    trackColor = DarkCardElevated
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Text("Categories", color = TextWhite, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-        Spacer(modifier = Modifier.height(8.dp))
-
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(3) { index ->
-                val title = if (index == 0) "Total Lifts (650 Lbs)" else if (index == 1) "Lift Streak (3 Days)" else "Last Lift (250 Lbs)"
-                Card(
-                    shape = RoundedCornerShape(30.dp),
-                    colors = CardDefaults.cardColors(containerColor = DarkCardColor),
-                    modifier = Modifier.fillMaxWidth().height(65.dp).border(1.dp, BorderColor, RoundedCornerShape(30.dp))
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+            Column(
+                modifier = Modifier
+                    .background(Brush.linearGradient(listOf(PurpleDeep, PurpleAccent)))
+                    .padding(20.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(72.dp)
+                            .clip(CircleShape)
+                            .background(DarkBackground)
+                            .border(2.dp, TextWhite.copy(alpha = 0.6f), CircleShape),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier.size(40.dp).clip(CircleShape).background(PurpleAccent.copy(alpha = 0.2f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(Icons.Default.FitnessCenter, contentDescription = null, tint = PurpleLight)
-                            }
-                            Spacer(modifier = Modifier.width(16.dp))
-                            Text(title, color = TextWhite, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                        }
-                        Icon(Icons.AutoMirrored.Filled.ArrowForwardIos, contentDescription = null, tint = TextGray, modifier = Modifier.size(16.dp))
+                        Image(
+                            painter = painterResource(id = rankIcon(rank)),
+                            contentDescription = "${rank?.name ?: "Unranked"} rank icon",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column {
+                        Text("CURRENT RANK", color = TextWhite.copy(alpha = 0.75f), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+                        Text(
+                            if (rank != null) "${rank.name} Tier" else "Unranked",
+                            color = TextWhite, fontSize = 24.sp, fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            if (rank != null) "${rank.min} - ${rank.max} lbs total" else "Log 10 lbs total to earn Knight",
+                            color = TextWhite.copy(alpha = 0.85f), fontSize = 13.sp
+                        )
                     }
                 }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        if (nextRank != null) "Progress to ${nextRank.name}" else "Max rank progress",
+                        color = TextWhite.copy(alpha = 0.85f), fontSize = 12.sp
+                    )
+                    Text("${(progress * 100).toInt()}%", color = TextWhite, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
+                    color = TextWhite,
+                    trackColor = TextWhite.copy(alpha = 0.25f)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+        Text("Your Stats", color = TextWhite, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            StatTile(Modifier.weight(1f), Icons.Default.FitnessCenter, PurpleLight, "$totalLifts", "Total Lifts (lbs)")
+            StatTile(Modifier.weight(1f), Icons.Default.LocalFireDepartment, FlameOrange, "3", "Day Streak")
+            StatTile(Modifier.weight(1f), Icons.Default.Bolt, PurpleLight, "250", "Last Lift (lbs)")
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+        Text("Today's Quest", color = TextWhite, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(12.dp))
+
+        AppCard(modifier = Modifier.fillMaxWidth(), onClick = onOpenWorkouts) {
+            Row(
+                modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconBadge(Icons.Default.FitnessCenter)
+                Spacer(modifier = Modifier.width(14.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Pick a workout", color = TextWhite, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Chest, Back, Arms or Legs", color = TextGray, fontSize = 13.sp)
+                }
+                Icon(Icons.AutoMirrored.Filled.ArrowForwardIos, contentDescription = null, tint = TextGray, modifier = Modifier.size(16.dp))
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+        QuoteOfTheDayCard()
+    }
+}
+
+// Quote of the day
+data class Quote(val text: String, val author: String, val category: String)
+
+val bodybuilderQuotes = listOf(
+
+    Quote("The mind is the limit. As long as the mind can envision the fact that you can do something, you can do it, as long as you really believe 100%.", "Arnold Schwarzenegger", "Mindset"),
+    Quote("Vision creates faith and faith creates willpower. With faith there is no anxiety, no doubt—just absolute belief in your ability to achieve.", "Arnold Schwarzenegger", "Mindset"),
+    Quote("If you're capable of sending a message to your mind to have clear self-discipline, then standard muscle building will take care of itself.", "Lee Haney", "Mindset"),
+
+    Quote("The last three or four reps is what makes the muscle grow. This area of pain divides the champion from someone else who is not a champion.", "Arnold Schwarzenegger", "Intensity"),
+    Quote("Everybody wants to be a bodybuilder, but nobody wants to lift no heavy-ass weights.", "Ronnie Coleman", "Intensity"),
+    Quote("Light weight, baby!", "Ronnie Coleman", "Intensity"),
+    Quote("If you work hard, you're going to get results. It's that simple.", "Dorian Yates", "Intensity"),
+    Quote("To be successful in bodybuilding, you have to be a good observer of your own body.", "Dorian Yates", "Intensity"),
+
+    Quote("Exercise to stimulate, not to annihilate. The world wasn't formed in a day, and neither were we. Set small goals and build upon them.", "Lee Haney", "Consistency"),
+    Quote("Consistency is the key to achieving any goal in life, especially in bodybuilding. Show up every day and put in the work.", "Phil Heath", "Consistency"),
+    Quote("I don't eat for taste, I eat for function.", "Jay Cutler", "Consistency"),
+
+    Quote("There are no shortcuts. Everything is reps, reps, reps.", "Arnold Schwarzenegger", "Discipline"),
+    Quote("I'm not the genetically most gifted guy, but I work harder than anyone else.", "Jay Cutler", "Discipline"),
+    Quote("Clear your mind of can't.", "Samuel Wilson", "Discipline"),
+    Quote("Surround yourself with people who challenge you, teach you, and push you to be better.", "Kai Greene", "Discipline"),
+    Quote("If you do what you've always done, you'll get what you've always gotten.", "Rich Piana", "Discipline"),
+
+    Quote("The worst thing I can be is the same as everybody else. I hate that.", "Arnold Schwarzenegger", "Mindset"),
+    Quote("Strength does not come from winning. Your struggles develop your strengths.", "Arnold Schwarzenegger", "Mindset")
+)
+
+// Picks one quote per calendar day
+fun quoteOfTheDay(): Quote {
+    val cal = Calendar.getInstance()
+    val dayNumber = cal.get(Calendar.YEAR) * 366 + cal.get(Calendar.DAY_OF_YEAR)
+    return bodybuilderQuotes[dayNumber % bodybuilderQuotes.size]
+}
+
+@Composable
+fun QuoteOfTheDayCard() {
+    val quote = remember { quoteOfTheDay() }
+
+    AppCard(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(20.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconBadge(Icons.Default.FormatQuote, size = 36)
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text("QUOTE OF THE DAY", color = PurpleLight, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+                    Text(quote.category, color = TextGray, fontSize = 12.sp)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                "\u201C${quote.text}\u201D",
+                color = TextWhite,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Medium,
+                lineHeight = 25.sp
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .width(24.dp)
+                        .height(2.dp)
+                        .background(PurpleAccent)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(quote.author, color = PurpleLight, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             }
         }
     }
 }
 
-// for quest board
 @Composable
-fun QuestBoardUi() {
+fun StatTile(modifier: Modifier, icon: ImageVector, tint: Color, value: String, label: String) {
+    AppCard(modifier = modifier) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            IconBadge(icon, tint, size = 36)
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(value, color = TextWhite, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text(label, color = TextGray, fontSize = 11.sp)
+        }
+    }
+}
+
+// Quest board
+@Composable
+fun QuestBoardUi(onSave: (Int) -> Unit) {
+    var savedSnapshot by remember { mutableIntStateOf(-1) }
     var benchPressInput by remember { mutableStateOf("") }
     var deadliftInput by remember { mutableStateOf("") }
     var squatInput by remember { mutableStateOf("") }
 
-    Column {
-        Text("Quest Board", color = TextWhite, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-        Text("Log your big 3 lifts to calculate future rank", color = TextGray, fontSize = 12.sp)
-        Spacer(modifier = Modifier.height(16.dp))
+    val total = (benchPressInput.toIntOrNull() ?: 0) +
+            (deadliftInput.toIntOrNull() ?: 0) +
+            (squatInput.toIntOrNull() ?: 0)
 
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = DarkCardColor),
-            modifier = Modifier.fillMaxWidth().border(1.dp, BorderColor, RoundedCornerShape(16.dp))
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 20.dp)
+    ) {
+        ScreenHeader("Quest Board", "Log your big 3 lifts to calculate your rank")
+
+        AppCard(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(20.dp)) {
                 Text("Power Ranking Inputs", color = PurpleLight, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(16.dp))
+
+                LiftField("Bench Press (lbs)", benchPressInput) { benchPressInput = it }
                 Spacer(modifier = Modifier.height(12.dp))
+                LiftField("Deadlift (lbs)", deadliftInput) { deadliftInput = it }
+                Spacer(modifier = Modifier.height(12.dp))
+                LiftField("Back Squat (lbs)", squatInput) { squatInput = it }
 
-                OutlinedTextField(
-                    value = benchPressInput,
-                    onValueChange = { benchPressInput = it },
-                    label = { Text("Bench Press (lbs)", color = TextGray) },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = PurpleAccent,
-                        unfocusedBorderColor = BorderColor,
-                        focusedTextColor = TextWhite,
-                        unfocusedTextColor = TextWhite
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Spacer(modifier = Modifier.height(20.dp))
 
-                Spacer(modifier = Modifier.height(8.dp))
-
-                OutlinedTextField(
-                    value = deadliftInput,
-                    onValueChange = { deadliftInput = it },
-                    label = { Text("Deadlifts (lbs)", color = TextGray) },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = PurpleAccent,
-                        unfocusedBorderColor = BorderColor,
-                        focusedTextColor = TextWhite,
-                        unfocusedTextColor = TextWhite
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                OutlinedTextField(
-                    value = squatInput,
-                    onValueChange = { squatInput = it },
-                    label = { Text("Back Squats (lbs)", color = TextGray) },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = PurpleAccent,
-                        unfocusedBorderColor = BorderColor,
-                        focusedTextColor = TextWhite,
-                        unfocusedTextColor = TextWhite
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(DarkCardElevated)
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Total", color = TextGray, fontSize = 14.sp)
+                    Text("$total lbs", color = TextWhite, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                }
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                Button(
-                    onClick = { /* Design only */ },
-                    colors = ButtonDefaults.buttonColors(containerColor = PurpleAccent),
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Save Power Lifts", color = TextWhite)
+                    Text("Rank", color = TextGray, fontSize = 14.sp)
+                    Text(
+                        rankFor(total)?.name ?: "Unranked",
+                        color = PurpleLight, fontSize = 16.sp, fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                val justSaved = total > 0 && savedSnapshot == total
+                Button(
+                    onClick = {
+                        onSave(total)
+                        savedSnapshot = total
+                    },
+                    enabled = total > 0,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PurpleAccent,
+                        disabledContainerColor = DarkCardElevated
+                    ),
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    if (justSaved) {
+                        Icon(Icons.Default.Check, contentDescription = null, tint = TextWhite)
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+                    Text(
+                        if (justSaved) "Saved" else "Save Power Lifts",
+                        color = if (total > 0) TextWhite else TextGray,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
         }
     }
 }
 
-// for workouts amd pre saved workouts
+@Composable
+fun LiftField(label: String, value: String, onChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = { input -> onChange(input.filter { it.isDigit() }) },
+        label = { Text(label) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        shape = RoundedCornerShape(14.dp),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = PurpleAccent,
+            unfocusedBorderColor = BorderColor,
+            focusedLabelColor = PurpleLight,
+            unfocusedLabelColor = TextGray,
+            focusedTextColor = TextWhite,
+            unfocusedTextColor = TextWhite,
+            cursorColor = PurpleLight
+        ),
+        modifier = Modifier.fillMaxWidth()
+    )
+}
+
+//Workouts
 @Composable
 fun PreSavedWorkoutUi() {
     var selectedWorkoutTitle by remember { mutableStateOf<String?>(null) }
     var selectedDifficulty by remember { mutableStateOf("Medium") }
 
     if (selectedWorkoutTitle == null) {
-        // --- VIEW 1: WORKOUT CATEGORY LIST ---
         val workoutPlans = listOf(
-            Pair("Chest Day Quest", "Push Lifts Focus • Pecs & Triceps"),
-            Pair("Back Day Quest", "Pull Lifts Focus • Lats & Upper Back"),
-            Pair("Arm Day Quest", "Isolation Focus • Biceps & Triceps"),
-            Pair("Leg Day Quest", "Lower Body Focus • Quads, Glutes & Hamstrings")
+            Pair("Chest Day Quest", "Pecs & Triceps"),
+            Pair("Back Day Quest", "Lats & Upper Back"),
+            Pair("Arm Day Quest", "Biceps & Triceps"),
+            Pair("Leg Day Quest", "Quads, Glutes & Hamstrings")
         )
 
-        Column {
-            Text("Pre-Saved Workouts", color = TextWhite, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            Text("Select a plan to configure difficulty", color = TextGray, fontSize = 12.sp)
-            Spacer(modifier = Modifier.height(16.dp))
+        Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 20.dp)) {
+            ScreenHeader("Workouts", "Choose a plan, then set your difficulty")
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(workoutPlans.size) { index ->
-                    val (title, summary) = workoutPlans[index]
-                    Card(
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = DarkCardColor),
-                        modifier = Modifier.fillMaxWidth().border(1.dp, BorderColor, RoundedCornerShape(16.dp))
-                    ) {
+                items(workoutPlans) { (title, summary) ->
+                    AppCard(modifier = Modifier.fillMaxWidth(), onClick = { selectedWorkoutTitle = title }) {
                         Row(
                             modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            IconBadge(Icons.Default.FitnessCenter, size = 48)
+                            Spacer(modifier = Modifier.width(14.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(title, color = PurpleLight, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(summary, color = TextGray, fontSize = 12.sp)
+                                Text(title, color = TextWhite, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(summary, color = TextGray, fontSize = 13.sp)
                             }
-                            Button(
-                                onClick = { selectedWorkoutTitle = title },
-                                colors = ButtonDefaults.buttonColors(containerColor = PurpleAccent),
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
-                            ) {
-                                Text("Start", color = TextWhite, fontSize = 12.sp)
-                            }
+                            Icon(Icons.AutoMirrored.Filled.ArrowForwardIos, contentDescription = null, tint = TextGray, modifier = Modifier.size(16.dp))
                         }
                     }
                 }
             }
         }
     } else {
-        // for workout details and difficulty
         val exercises = getExercisesForWorkout(selectedWorkoutTitle!!, selectedDifficulty)
 
-        Column {
-            // Header with Back Button
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
+        Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { selectedWorkoutTitle = null }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = TextWhite)
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(selectedWorkoutTitle!!, color = TextWhite, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text(selectedWorkoutTitle!!, color = TextWhite, fontSize = 22.sp, fontWeight = FontWeight.Bold)
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Difficulty Selection Buttons
+            // Difficulty selector
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(DarkCardColor)
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 listOf("Easy", "Medium", "Hard").forEach { difficulty ->
                     val isSelected = selectedDifficulty == difficulty
                     Button(
                         onClick = { selectedDifficulty = difficulty },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isSelected) PurpleAccent else DarkCardColor
+                            containerColor = if (isSelected) PurpleAccent else Color.Transparent
                         ),
-                        modifier = Modifier.weight(1f).border(1.dp, if (isSelected) PurpleLight else BorderColor, RoundedCornerShape(12.dp)),
-                        shape = RoundedCornerShape(12.dp)
+                        elevation = null,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Text(difficulty, color = TextWhite, fontSize = 12.sp)
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // for future video holder
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = DarkCardColor),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(160.dp)
-                    .border(1.dp, BorderColor, RoundedCornerShape(16.dp))
-            ) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            Icons.Default.PlayCircle,
-                            contentDescription = "Workout Guide Video Placeholder",
-                            tint = PurpleLight,
-                            modifier = Modifier.size(48.dp)
+                        Text(
+                            difficulty,
+                            color = if (isSelected) TextWhite else TextGray,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Workout Guide Video Container", color = TextWhite, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                        Text("Interactive demonstration video player", color = TextGray, fontSize = 11.sp)
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // exercise list
-            Text("Routine ($selectedDifficulty Level - ${exercises.size} Exercises)", color = PurpleLight, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(8.dp))
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(bottom = 16.dp)
+            ) {
+                // Video placeholder
+                item {
+                    AppCard(modifier = Modifier.fillMaxWidth().height(150.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Brush.verticalGradient(listOf(DarkCardElevated, DarkCardColor))),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    Icons.Default.PlayCircle,
+                                    contentDescription = "Workout guide video placeholder",
+                                    tint = PurpleLight,
+                                    modifier = Modifier.size(48.dp)
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text("Workout Guide Video", color = TextWhite, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Coming soon", color = TextGray, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
 
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(exercises.size) { index ->
-                    val (exerciseName, setsReps) = exercises[index]
-                    Card(
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = DarkCardColor),
-                        modifier = Modifier.fillMaxWidth().border(1.dp, BorderColor, RoundedCornerShape(12.dp))
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Text("Routine", color = TextWhite, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Text("${exercises.size} exercises", color = TextGray, fontSize = 13.sp)
+                    }
+                }
+
+                itemsIndexed(exercises) { index, (exerciseName, setsReps) ->
+                    AppCard(modifier = Modifier.fillMaxWidth()) {
                         Row(
-                            modifier = Modifier.padding(12.dp).fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.padding(14.dp).fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("${index + 1}. $exerciseName", color = TextWhite, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                            Text(setsReps, color = TextGray, fontSize = 12.sp)
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(PurpleAccent.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("${index + 1}", color = PurpleLight, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(exerciseName, color = TextWhite, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                                Text(setsReps, color = TextGray, fontSize = 12.sp)
+                            }
                         }
+                    }
+                }
+
+                item {
+                    Button(
+                        onClick = { /* Design only */ },
+                        colors = ButtonDefaults.buttonColors(containerColor = PurpleAccent),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth().height(52.dp)
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = TextWhite)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Start Workout", color = TextWhite, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -534,41 +795,59 @@ fun getExercisesForWorkout(workoutTitle: String, difficulty: String): List<Pair<
     }
 }
 
-// for progress and history
+// History
 @Composable
 fun ProgressHistoryUi() {
-    Column {
-        Text("History & Records", color = TextWhite, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 20.dp)
+    ) {
+        ScreenHeader("History", "Your training activity this week")
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            StatTile(Modifier.weight(1f), Icons.Default.CalendarMonth, PurpleLight, "5", "Workouts")
+            StatTile(Modifier.weight(1f), Icons.Default.LocalFireDepartment, FlameOrange, "3", "Day Streak")
+        }
+
         Spacer(modifier = Modifier.height(16.dp))
 
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = DarkCardColor),
-            modifier = Modifier.fillMaxWidth().border(1.dp, BorderColor, RoundedCornerShape(16.dp))
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text("Weekly Activity", color = TextGray, fontSize = 12.sp)
-                Spacer(modifier = Modifier.height(16.dp))
+        AppCard(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text("Weekly Activity", color = TextWhite, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(20.dp))
+
+                val heights = listOf(0.4f, 0.9f, 0.5f, 0.8f, 0.3f, 0.7f, 1.0f)
+                val days = listOf("M", "T", "W", "T", "F", "S", "S")
 
                 Row(
-                    modifier = Modifier.fillMaxWidth().height(120.dp),
+                    modifier = Modifier.fillMaxWidth().height(140.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.Bottom
                 ) {
-                    val heights = listOf(0.4f, 0.9f, 0.5f, 0.8f, 0.3f, 0.7f, 1.0f)
-                    val days = listOf("M", "T", "W", "T", "F", "S", "S")
-
                     days.forEachIndexed { index, day ->
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Bottom
+                        ) {
                             Box(
                                 modifier = Modifier
-                                    .width(12.dp)
-                                    .fillMaxHeight(heights[index])
-                                    .clip(RoundedCornerShape(6.dp))
+                                    .width(24.dp)
+                                    .height((110 * heights[index]).dp)
+                                    .clip(RoundedCornerShape(8.dp))
                                     .background(if (index == 6) PurpleAccent else DarkCardElevated)
                             )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(day, color = TextGray, fontSize = 12.sp)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                day,
+                                color = if (index == 6) PurpleLight else TextGray,
+                                fontSize = 12.sp,
+                                fontWeight = if (index == 6) FontWeight.Bold else FontWeight.Normal
+                            )
                         }
                     }
                 }
