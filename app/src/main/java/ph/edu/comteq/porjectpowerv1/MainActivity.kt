@@ -1,6 +1,8 @@
 package ph.edu.comteq.porjectpowerv1
 
+import android.net.Uri
 import android.os.Bundle
+import android.widget.VideoView
 import androidx.core.content.edit
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -37,6 +39,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import java.util.Calendar
 
 // ---------- Colors ----------
@@ -67,23 +70,26 @@ val powerRanks = listOf(
     PowerRank("Saiyan", 850, 1000)
 )
 
-
+// Highest rank whose minimum you have reached (null = below 10 lbs, unranked).
+// Scores that fall between two tiers (e.g. 55) stay in the lower rank.
+// Boundary values (180, 450, 850) count as the higher rank.
 fun rankFor(total: Int): PowerRank? = powerRanks.lastOrNull { total >= it.min }
 
 fun nextRankFor(total: Int): PowerRank? = powerRanks.firstOrNull { it.min > total }
 
+// Progress from 0 to 1 from the current rank's minimum to the next rank's minimum
 fun rankProgress(total: Int): Float {
     val current = rankFor(total)
     val next = nextRankFor(total)
     return when {
-        next == null -> ((total - 850) / 150f).coerceIn(0f, 1f)
+        next == null -> ((total - 850) / 150f).coerceIn(0f, 1f) // Saiyan: progress toward 1000
         current == null -> (total / next.min.toFloat()).coerceIn(0f, 1f)
         else -> ((total - current.min).toFloat() / (next.min - current.min)).coerceIn(0f, 1f)
     }
 }
 
-// Each rank has its own icon
-// common logo Unranked user
+// Each rank has its own icon in res/drawable (file names match your project).
+// Viltrumite uses the Viltrum Empire logo; Unranked uses common.png.
 fun rankIcon(rank: PowerRank?): Int = when (rank?.name) {
     "Knight" -> R.drawable.knight
     "Gladiator" -> R.drawable.gladiator
@@ -93,7 +99,7 @@ fun rankIcon(rank: PowerRank?): Int = when (rank?.name) {
     "Eternal" -> R.drawable.eternal
     "Olympian" -> R.drawable.olympian
     "Viltrumite" -> R.drawable.viltrumempirelogo
-    "Kryptonian" -> R.drawable.kyrptonian
+    "Kryptonian" -> R.drawable.kyrptonian // file is spelled "kyrptonian" - rename it, then fix this line
     "Saiyan" -> R.drawable.saiyan
     else -> R.drawable.common // Unranked (below 10 lbs)
 }
@@ -107,18 +113,19 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-
+// ---------- Shared building blocks ----------
 private data class NavItem(val label: String, val icon: ImageVector)
 
 @Composable
 fun AppCard(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
+    borderColor: Color = BorderColor,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val shape = RoundedCornerShape(20.dp)
     val colors = CardDefaults.cardColors(containerColor = DarkCardColor)
-    val border = Modifier.border(1.dp, BorderColor, shape)
+    val border = Modifier.border(1.dp, borderColor, shape)
     if (onClick != null) {
         Card(onClick = onClick, shape = shape, colors = colors, modifier = modifier.then(border), content = content)
     } else {
@@ -148,12 +155,12 @@ fun ScreenHeader(title: String, subtitle: String) {
     }
 }
 
-
+// ---------- App shell ----------
 @Composable
 fun AppUiShell() {
     var currentTab by remember { mutableIntStateOf(0) }
 
-    // Saved total is remembered on the device
+    // Saved total is remembered on the device, so the rank survives closing the app
     val context = LocalContext.current
     val inPreview = LocalInspectionMode.current
     val prefs = remember { context.getSharedPreferences("power_prefs", android.content.Context.MODE_PRIVATE) }
@@ -207,7 +214,7 @@ fun AppUiShell() {
     }
 }
 
-// Dashboard
+// ---------- Dashboard ----------
 @Composable
 fun DashboardUi(totalLifts: Int, onOpenWorkouts: () -> Unit) {
     val rank = rankFor(totalLifts)
@@ -220,7 +227,6 @@ fun DashboardUi(totalLifts: Int, onOpenWorkouts: () -> Unit) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 20.dp)
     ) {
-
         Text("Project Power", color = TextWhite, fontSize = 28.sp, fontWeight = FontWeight.Bold)
 
         Spacer(modifier = Modifier.height(20.dp))
@@ -325,36 +331,36 @@ fun DashboardUi(totalLifts: Int, onOpenWorkouts: () -> Unit) {
     }
 }
 
-// Quote of the day
+// ---------- Quote of the day ----------
 data class Quote(val text: String, val author: String, val category: String)
 
 val bodybuilderQuotes = listOf(
-
+    // Mindset & Determination
     Quote("The mind is the limit. As long as the mind can envision the fact that you can do something, you can do it, as long as you really believe 100%.", "Arnold Schwarzenegger", "Mindset"),
     Quote("Vision creates faith and faith creates willpower. With faith there is no anxiety, no doubt—just absolute belief in your ability to achieve.", "Arnold Schwarzenegger", "Mindset"),
     Quote("If you're capable of sending a message to your mind to have clear self-discipline, then standard muscle building will take care of itself.", "Lee Haney", "Mindset"),
-
+    // Intensity & Pushing Through Pain
     Quote("The last three or four reps is what makes the muscle grow. This area of pain divides the champion from someone else who is not a champion.", "Arnold Schwarzenegger", "Intensity"),
     Quote("Everybody wants to be a bodybuilder, but nobody wants to lift no heavy-ass weights.", "Ronnie Coleman", "Intensity"),
     Quote("Light weight, baby!", "Ronnie Coleman", "Intensity"),
     Quote("If you work hard, you're going to get results. It's that simple.", "Dorian Yates", "Intensity"),
     Quote("To be successful in bodybuilding, you have to be a good observer of your own body.", "Dorian Yates", "Intensity"),
-
+    // Consistency & Longevity
     Quote("Exercise to stimulate, not to annihilate. The world wasn't formed in a day, and neither were we. Set small goals and build upon them.", "Lee Haney", "Consistency"),
     Quote("Consistency is the key to achieving any goal in life, especially in bodybuilding. Show up every day and put in the work.", "Phil Heath", "Consistency"),
     Quote("I don't eat for taste, I eat for function.", "Jay Cutler", "Consistency"),
-
+    // Work Ethic & Discipline
     Quote("There are no shortcuts. Everything is reps, reps, reps.", "Arnold Schwarzenegger", "Discipline"),
     Quote("I'm not the genetically most gifted guy, but I work harder than anyone else.", "Jay Cutler", "Discipline"),
     Quote("Clear your mind of can't.", "Samuel Wilson", "Discipline"),
     Quote("Surround yourself with people who challenge you, teach you, and push you to be better.", "Kai Greene", "Discipline"),
     Quote("If you do what you've always done, you'll get what you've always gotten.", "Rich Piana", "Discipline"),
-
+    // Extra quotes
     Quote("The worst thing I can be is the same as everybody else. I hate that.", "Arnold Schwarzenegger", "Mindset"),
     Quote("Strength does not come from winning. Your struggles develop your strengths.", "Arnold Schwarzenegger", "Mindset")
 )
 
-// Picks one quote per calendar day
+// Picks one quote per calendar day (local time), so it changes every day
 fun quoteOfTheDay(): Quote {
     val cal = Calendar.getInstance()
     val dayNumber = cal.get(Calendar.YEAR) * 366 + cal.get(Calendar.DAY_OF_YEAR)
@@ -527,7 +533,7 @@ fun LiftField(label: String, value: String, onChange: (String) -> Unit) {
     )
 }
 
-//Workouts
+// Workouts
 @Composable
 fun PreSavedWorkoutUi() {
     var selectedWorkoutTitle by remember { mutableStateOf<String?>(null) }
@@ -566,6 +572,9 @@ fun PreSavedWorkoutUi() {
         }
     } else {
         val exercises = getExercisesForWorkout(selectedWorkoutTitle!!, selectedDifficulty)
+        // Which exercise's video is showing (resets when the workout or difficulty changes)
+        var selectedExerciseIndex by remember(selectedWorkoutTitle, selectedDifficulty) { mutableIntStateOf(0) }
+        val currentExercise = exercises[selectedExerciseIndex.coerceIn(0, exercises.lastIndex)].first
 
         Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -613,28 +622,9 @@ fun PreSavedWorkoutUi() {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 contentPadding = PaddingValues(bottom = 16.dp)
             ) {
-                // Video placeholder
+                // Video for the selected exercise
                 item {
-                    AppCard(modifier = Modifier.fillMaxWidth().height(150.dp)) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(Brush.verticalGradient(listOf(DarkCardElevated, DarkCardColor))),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    Icons.Default.PlayCircle,
-                                    contentDescription = "Workout guide video placeholder",
-                                    tint = PurpleLight,
-                                    modifier = Modifier.size(48.dp)
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text("Workout Guide Video", color = TextWhite, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Coming soon", color = TextGray, fontSize = 12.sp)
-                            }
-                        }
-                    }
+                    ExerciseVideoPlayer(exerciseName = currentExercise)
                 }
 
                 item {
@@ -644,12 +634,16 @@ fun PreSavedWorkoutUi() {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("Routine", color = TextWhite, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        Text("${exercises.size} exercises", color = TextGray, fontSize = 13.sp)
+                        Text("${exercises.size} exercises - tap to watch", color = TextGray, fontSize = 13.sp)
                     }
                 }
 
                 itemsIndexed(exercises) { index, (exerciseName, setsReps) ->
-                    AppCard(modifier = Modifier.fillMaxWidth()) {
+                    AppCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { selectedExerciseIndex = index },
+                        borderColor = if (index == selectedExerciseIndex) PurpleAccent else BorderColor
+                    ) {
                         Row(
                             modifier = Modifier.padding(14.dp).fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
@@ -795,7 +789,144 @@ fun getExercisesForWorkout(workoutTitle: String, difficulty: String): List<Pair<
     }
 }
 
-// History
+// Exercise videos
+val exerciseVideos = mapOf(
+    "Push-Ups" to "push_ups",
+    "Flat Dumbbell Press" to "flatdumbellpress",
+    "Incline Dumbbell Flyes" to "incline_dumbbell_flyes",
+    "Chest Dips (Assisted)" to "dips",
+    "Cable Crossover (High)" to "cable_crossover_high",
+    "Barbell Bench Press" to "barbell_bench_press",
+    "Incline Dumbbell Press" to "incline_dumbbell_press",
+    "Chest Dips (Bodyweight)" to "chest_dips_bodyweight",
+    "Cable Crossover (Mid)" to "cable_crossover_mid",
+    "Decline Dumbbell Press" to "decline_dumbbell_press",
+    "Push-Up Finisher" to "push_up_finisher",
+    "Heavy Barbell Bench Press" to "heavy_barbell_bench_press",
+    "Incline Barbell Bench Press" to "incline_barbell_bench_press",
+    "Weighted Chest Dips" to "weighted_chest_dips",
+    "Low-to-High Cable Flyes" to "low_to_high_cable_flyes",
+    "Dumbbell Pullover" to "dumbbell_pullover",
+    "Incline Diamond Push-Ups" to "incline_diamond_push_ups",
+    "Lat Pulldowns" to "latpulldowns",
+    "Seated Cable Rows" to "seated_cable_rows",
+    "Dumbbell Single-Arm Rows" to "dumbbell_single_arm_rows",
+    "Face Pulls" to "face_pulls",
+    "Hyperextensions" to "hyperextension",
+    "Barbell Bent-Over Rows" to "barbell_bent_over_rows",
+    "Wide-Grip Lat Pulldowns" to "wide_grip_lat_pulldowns",
+    "T-Bar Rows" to "t_bar_rows",
+    "Single-Arm Cable Lat Pulls" to "single_arm_cable_lat_pulls",
+    "Reverse Pec Deck Flyes" to "reverse_pec_deck_flyes",
+    "Pull-Ups" to "pull_ups",
+    "Conventional Deadlifts" to "conventional_deadlifts",
+    "Weighted Pull-Ups" to "weighted_pull_ups",
+    "Heavy Barbell Pendlay Rows" to "heavy_barbell_pendlay_rows",
+    "Close-Grip Lat Pulldowns" to "close_grip_lat_pulldowns",
+    "Meadows Rows" to "meadows_rows",
+    "Rack Pulls" to "rack_pulls",
+    "Standing Barbell Curls" to "standing_barbell_curls",
+    "Tricep Rope Pushdowns" to "tricep_rope_pushdowns",
+    "Dumbbell Hammer Curls" to "dumbbell_hammer_curls",
+    "Bench Dips" to "bench_dips",
+    "Concentration Curls" to "concentration_curls",
+    "EZ-Bar Preacher Curls" to "ez_bar_preacher_curls",
+    "Skullcrushers (EZ-Bar)" to "skullcrushers_ez_bar",
+    "Incline Dumbbell Curls" to "incline_dumbbell_curls",
+    "Overhead Dumbbell Extension" to "overhead_dumbbell_extension",
+    "Cable Hammer Curls" to "cable_hammer_curls",
+    "Single-Arm Tricep Pushdowns" to "single_arm_tricep_pushdowns",
+    "Heavy Cheat Curls (Barbell)" to "heavy_cheat_curls_barbell",
+    "Close-Grip Bench Press" to "close_grip_bench_press",
+    "Spider Curls" to "spider_curls",
+    "Weighted Overhead Cable Extension" to "weighted_overhead_cable_extension",
+    "Reverse Grip Barbell Curls" to "reverse_grip_barbell_curls",
+    "Tricep Dips to Burnout" to "tricep_dips_to_burnout",
+    "Goblet Squats" to "goblet_squats",
+    "Leg Press" to "leg_press",
+    "Lying Leg Curls" to "lying_leg_curls",
+    "Walking Lunges" to "walking_lunges",
+    "Standing Calf Raises" to "standing_calf_raises",
+    "Barbell Back Squats" to "squat",
+    "Romanian Deadlifts (RDL)" to "rdl",
+    "Leg Extensions" to "leg_extensions",
+    "Seated Leg Curls" to "seated_leg_curls",
+    "Seated Calf Raises" to "seated_calf_raises",
+    "Heavy Barbell Back Squats" to "squat",
+    "Barbell Hip Thrusts" to "barbell_hip_thrusts",
+    "Bulgarian Split Squats" to "bulgarian_split_squats",
+    "Heavy Romanian Deadlifts" to "heavy_romanian_deadlifts",
+    "Single-Leg Extensions" to "single_leg_extensions",
+    "Donkey Calf Raises" to "donkey_calf_raises"
+)
+
+@Composable
+fun ExerciseVideoPlayer(exerciseName: String) {
+    val context = LocalContext.current
+    val videoName = exerciseVideos[exerciseName]
+    val resId = remember(videoName) {
+        if (videoName.isNullOrBlank()) 0
+        else context.resources.getIdentifier(videoName, "raw", context.packageName)
+    }
+
+    AppCard(modifier = Modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(200.dp)
+                .background(Color.Black),
+            contentAlignment = Alignment.Center
+        ) {
+            if (resId != 0 && !LocalInspectionMode.current) {
+                val uri = remember(resId) { Uri.parse("android.resource://${context.packageName}/$resId") }
+                AndroidView(
+                    factory = { ctx ->
+                        VideoView(ctx).apply {
+                            setOnPreparedListener { player ->
+                                player.isLooping = true
+                                start()
+                            }
+                            // Tap the video to pause / resume
+                            setOnClickListener { if (isPlaying) pause() else start() }
+                        }
+                    },
+                    update = { view ->
+                        if (view.tag != resId) {
+                            view.tag = resId
+                            view.setVideoURI(uri)
+                        }
+                    },
+                    onRelease = { it.stopPlayback() },
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        Icons.Default.PlayCircle,
+                        contentDescription = "Video placeholder",
+                        tint = PurpleLight,
+                        modifier = Modifier.size(48.dp)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("Video coming soon", color = TextGray, fontSize = 13.sp)
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                exerciseName,
+                color = TextWhite, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+            if (resId != 0) Text("Tap video to pause", color = TextGray, fontSize = 11.sp)
+        }
+    }
+}
+
+// ---------- History ----------
 @Composable
 fun ProgressHistoryUi() {
     Column(
