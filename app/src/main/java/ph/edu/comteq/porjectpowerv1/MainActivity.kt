@@ -2,6 +2,7 @@ package ph.edu.comteq.porjectpowerv1
 
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import android.widget.VideoView
 import androidx.core.content.edit
 import androidx.activity.ComponentActivity
@@ -9,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -36,11 +38,17 @@ import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 // ---------- Colors ----------
 val DarkBackground = Color(0xFF0F0E17)
@@ -53,6 +61,7 @@ val FlameOrange = Color(0xFFFF9F1C)
 val TextWhite = Color(0xFFFFFFFF)
 val TextGray = Color(0xFF9CA3AF)
 val BorderColor = Color(0xFF332E4C)
+val ErrorRed = Color(0xFFFF6B6B)
 
 // ---------- Power scale ----------
 data class PowerRank(val name: String, val min: Int, val max: Int)
@@ -70,14 +79,12 @@ val powerRanks = listOf(
     PowerRank("Saiyan", 850, 1000)
 )
 
-// Highest rank whose minimum you have reached (null = below 10 lbs, unranked).
-// Scores that fall between two tiers (e.g. 55) stay in the lower rank.
-// Boundary values (180, 450, 850) count as the higher rank.
+
 fun rankFor(total: Int): PowerRank? = powerRanks.lastOrNull { total >= it.min }
 
 fun nextRankFor(total: Int): PowerRank? = powerRanks.firstOrNull { it.min > total }
 
-// Progress from 0 to 1 from the current rank's minimum to the next rank's minimum
+
 fun rankProgress(total: Int): Float {
     val current = rankFor(total)
     val next = nextRankFor(total)
@@ -88,8 +95,7 @@ fun rankProgress(total: Int): Float {
     }
 }
 
-// Each rank has its own icon in res/drawable (file names match your project).
-// Viltrumite uses the Viltrum Empire logo; Unranked uses common.png.
+
 fun rankIcon(rank: PowerRank?): Int = when (rank?.name) {
     "Knight" -> R.drawable.knight
     "Gladiator" -> R.drawable.gladiator
@@ -102,6 +108,63 @@ fun rankIcon(rank: PowerRank?): Int = when (rank?.name) {
     "Kryptonian" -> R.drawable.kyrptonian // file is spelled "kyrptonian" - rename it, then fix this line
     "Saiyan" -> R.drawable.saiyan
     else -> R.drawable.common // Unranked (below 10 lbs)
+}
+
+
+fun todayEpochDay(): Long {
+    val cal = Calendar.getInstance()
+    return (cal.timeInMillis + cal.timeZone.getOffset(cal.timeInMillis)) / 86_400_000L
+}
+
+
+data class LiftEntry(val day: Long, val bench: Int, val deadlift: Int, val squat: Int) {
+    val total: Int get() = bench + deadlift + squat
+}
+
+
+fun historyToString(list: List<LiftEntry>): String =
+    list.joinToString(";") { "${it.day},${it.bench},${it.deadlift},${it.squat}" }
+
+fun historyFromString(text: String): List<LiftEntry> =
+    text.split(";").mapNotNull { part ->
+        val p = part.split(",")
+        if (p.size != 4) return@mapNotNull null
+        val day = p[0].toLongOrNull() ?: return@mapNotNull null
+        LiftEntry(day, p[1].toIntOrNull() ?: 0, p[2].toIntOrNull() ?: 0, p[3].toIntOrNull() ?: 0)
+    }
+
+
+fun rankIndexFor(total: Int): Int = powerRanks.indexOfLast { total >= it.min }
+
+
+fun formatDay(day: Long): String {
+    val format = SimpleDateFormat("MMM d", Locale.getDefault())
+    format.timeZone = TimeZone.getTimeZone("UTC")
+    return format.format(Date(day * 86_400_000L))
+}
+
+
+fun activityToString(map: Map<Long, Int>): String =
+    map.entries.sortedBy { it.key }.joinToString(";") { "${it.key}:${it.value}" }
+
+fun activityFromString(text: String): Map<Long, Int> =
+    text.split(";").mapNotNull { part ->
+        val p = part.split(":")
+        val day = p.getOrNull(0)?.toLongOrNull()
+        val count = p.getOrNull(1)?.toIntOrNull()
+        if (day != null && count != null) Pair(day, count) else null
+    }.toMap()
+
+
+fun bestLiftOf(history: List<LiftEntry>): Pair<String, Int>? {
+    var bestName: String? = null
+    var best = 0
+    for (entry in history) {
+        if (entry.bench > best) { best = entry.bench; bestName = "Bench" }
+        if (entry.deadlift > best) { best = entry.deadlift; bestName = "Deadlift" }
+        if (entry.squat > best) { best = entry.squat; bestName = "Squat" }
+    }
+    return bestName?.let { Pair(it, best) }
 }
 
 class MainActivity : ComponentActivity() {
@@ -165,6 +228,59 @@ fun AppUiShell() {
     val inPreview = LocalInspectionMode.current
     val prefs = remember { context.getSharedPreferences("power_prefs", android.content.Context.MODE_PRIVATE) }
     var savedTotal by remember { mutableIntStateOf(if (inPreview) 0 else prefs.getInt("saved_total", 0)) }
+    var streak by remember { mutableIntStateOf(if (inPreview) 0 else prefs.getInt("streak", 0)) }
+    var lastActiveDay by remember { mutableLongStateOf(if (inPreview) -1L else prefs.getLong("last_active_day", -1L)) }
+
+    var history by remember {
+        mutableStateOf(if (inPreview) emptyList() else historyFromString(prefs.getString("history", "") ?: ""))
+    }
+
+    var workoutsDone by remember { mutableIntStateOf(if (inPreview) 0 else prefs.getInt("workouts_done", 0)) }
+    var activity by remember {
+        mutableStateOf(if (inPreview) emptyMap() else activityFromString(prefs.getString("activity", "") ?: ""))
+    }
+    var rankUp by remember { mutableStateOf<PowerRank?>(null) }
+
+
+    var profileName by remember { mutableStateOf(if (inPreview) "Lifter" else prefs.getString("profile_name", "") ?: "") }
+    var fitnessLevel by remember { mutableStateOf(if (inPreview) "Casual" else prefs.getString("fitness_level", "") ?: "") }
+    var onboarded by remember { mutableStateOf(inPreview || prefs.getBoolean("onboarded", false)) }
+    var showProfileDialog by remember { mutableStateOf(false) }
+
+
+    fun recordActivity(isWorkout: Boolean = false) {
+        val today = todayEpochDay()
+        if (lastActiveDay != today) {
+            streak = if (lastActiveDay == today - 1) streak + 1 else 1 // yesterday -> +1, otherwise restart at 1
+            lastActiveDay = today
+        }
+        activity = (activity + Pair(today, (activity[today] ?: 0) + 1)).filterKeys { it >= today - 60 }
+        if (isWorkout) workoutsDone += 1
+        if (!inPreview) prefs.edit {
+            putInt("streak", streak)
+            putLong("last_active_day", lastActiveDay)
+            putInt("workouts_done", workoutsDone)
+            putString("activity", activityToString(activity))
+        }
+    }
+
+
+    val shownStreak = if (lastActiveDay >= 0 && todayEpochDay() - lastActiveDay > 1) 0 else streak
+
+
+    if (!onboarded) {
+        OnboardingUi(onFinish = { name, level ->
+            profileName = name
+            fitnessLevel = level
+            onboarded = true
+            if (!inPreview) prefs.edit {
+                putString("profile_name", name)
+                putString("fitness_level", level)
+                putBoolean("onboarded", true)
+            }
+        })
+        return
+    }
 
     val navItems = listOf(
         NavItem("Home", Icons.Default.Home),
@@ -202,21 +318,429 @@ fun AppUiShell() {
                 .background(DarkBackground)
         ) {
             when (currentTab) {
-                0 -> DashboardUi(totalLifts = savedTotal, onOpenWorkouts = { currentTab = 2 })
-                1 -> QuestBoardUi(onSave = { total ->
+                0 -> DashboardUi(
+                    totalLifts = savedTotal,
+                    dayStreak = shownStreak,
+                    bestLift = bestLiftOf(history),
+                    profileName = profileName,
+                    fitnessLevel = fitnessLevel,
+                    onEditProfile = { showProfileDialog = true },
+                    onOpenWorkouts = { currentTab = 2 }
+                )
+                1 -> QuestBoardUi(lastLifts = history.lastOrNull(), onSave = { bench, deadlift, squat ->
+                    val total = bench + deadlift + squat
+
+                    // Moving up to a higher rank shows the rank-up pop-up
+                    val oldRank = rankIndexFor(savedTotal)
+                    val newRank = rankIndexFor(total)
+                    if (newRank > oldRank) rankUp = powerRanks[newRank]
+
                     savedTotal = total
-                    if (!inPreview) prefs.edit { putInt("saved_total", total) }
+
+
+                    val entry = LiftEntry(todayEpochDay(), bench, deadlift, squat)
+                    history = (history.filter { it.day != entry.day } + entry).sortedBy { it.day }.takeLast(60)
+
+                    if (!inPreview) prefs.edit {
+                        putInt("saved_total", total)
+                        putString("history", historyToString(history))
+                    }
+                    recordActivity()
                 })
-                2 -> PreSavedWorkoutUi()
-                3 -> ProgressHistoryUi()
+                2 -> PreSavedWorkoutUi(
+                    onWorkoutFinished = { recordActivity(isWorkout = true) },
+                    defaultDifficulty = difficultyFor(fitnessLevel) // your fitness level picks the starting difficulty
+                )
+                3 -> ProgressHistoryUi(
+                    history = history,
+                    workoutsDone = workoutsDone,
+                    dayStreak = shownStreak,
+                    activity = activity
+                )
+            }
+        }
+    }
+
+    rankUp?.let { RankUpDialog(rank = it, onDismiss = { rankUp = null }) }
+
+    if (showProfileDialog) {
+        ProfileDialog(
+            name = profileName,
+            level = fitnessLevel,
+            onSave = { name, level ->
+                profileName = name
+                fitnessLevel = level
+                showProfileDialog = false
+                if (!inPreview) prefs.edit {
+                    putString("profile_name", name)
+                    putString("fitness_level", level)
+                }
+            },
+            onDismiss = { showProfileDialog = false }
+        )
+    }
+}
+
+// Profile + intro screens
+// Fitness level
+fun difficultyFor(level: String): String = when (level) {
+    "Beginner" -> "Easy"
+    "Advanced" -> "Hard"
+    else -> "Medium"
+}
+
+val fitnessLevels = listOf("Beginner", "Casual", "Advanced")
+
+@Composable
+fun appFieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedBorderColor = PurpleAccent,
+    unfocusedBorderColor = BorderColor,
+    focusedLabelColor = PurpleLight,
+    unfocusedLabelColor = TextGray,
+    focusedTextColor = TextWhite,
+    unfocusedTextColor = TextWhite,
+    cursorColor = PurpleLight
+)
+
+@Composable
+fun OnboardingUi(onFinish: (name: String, level: String) -> Unit) {
+    var page by remember { mutableIntStateOf(0) }
+    var name by remember { mutableStateOf("") }
+    var level by remember { mutableStateOf("") }
+    val lastPage = 2
+
+    // You can't go on until the name
+    val canContinue = when (page) {
+        0 -> name.isNotBlank()
+        1 -> level.isNotEmpty()
+        else -> true
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DarkBackground)
+            .systemBarsPadding()
+            .padding(24.dp)
+    ) {
+
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+            repeat(lastPage + 1) { i ->
+                Box(
+                    modifier = Modifier
+                        .padding(horizontal = 4.dp)
+                        .width(if (i == page) 24.dp else 8.dp)
+                        .height(8.dp)
+                        .clip(CircleShape)
+                        .background(if (i == page) PurpleAccent else DarkCardElevated)
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Spacer(modifier = Modifier.height(32.dp))
+
+            when (page) {
+                0 -> {
+                    Box(
+                        modifier = Modifier
+                            .size(120.dp)
+                            .clip(CircleShape)
+                            .background(DarkCardColor)
+                            .border(2.dp, PurpleAccent, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.common),
+                            contentDescription = "Project Power logo",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Text(
+                        "Welcome to Project Power",
+                        color = TextWhite, fontSize = 28.sp, fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Lift. Rank up. Repeat.", color = TextGray, fontSize = 15.sp)
+                    Spacer(modifier = Modifier.height(32.dp))
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { if (it.length <= 20) name = it },
+                        label = { Text("What should we call you?") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        colors = appFieldColors(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "You can change this later by tapping your picture on the home screen.",
+                        color = TextGray, fontSize = 12.sp, textAlign = TextAlign.Center
+                    )
+                }
+
+                1 -> {
+                    Text(
+                        "What's your fitness level?",
+                        color = TextWhite, fontSize = 26.sp, fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "This sets your starting workout difficulty. You can still change it any time.",
+                        color = TextGray, fontSize = 14.sp, textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    val options = listOf(
+                        Triple("Beginner", "New to lifting, or getting back into it", Icons.Default.Star),
+                        Triple("Casual", "You train now and then and know the basics", Icons.Default.Bolt),
+                        Triple("Advanced", "You train regularly and lift heavy", Icons.Default.LocalFireDepartment)
+                    )
+                    options.forEach { (title, description, icon) ->
+                        val selected = level == title
+                        AppCard(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                            onClick = { level = title },
+                            borderColor = if (selected) PurpleAccent else BorderColor
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconBadge(icon)
+                                Spacer(modifier = Modifier.width(14.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(title, color = TextWhite, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(description, color = TextGray, fontSize = 13.sp)
+                                    Text(
+                                        "Starts on ${difficultyFor(title)} workouts",
+                                        color = PurpleLight, fontSize = 12.sp
+                                    )
+                                }
+                                if (selected) {
+                                    Icon(Icons.Default.Check, contentDescription = "Selected", tint = PurpleLight)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                else -> {
+                    Text(
+                        "How it works",
+                        color = TextWhite, fontSize = 28.sp, fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    val steps = listOf(
+                        Triple(Icons.Default.EmojiEvents, "Quest Board", "Log your bench, deadlift and squat. Your total sets your power rank, from Knight to Saiyan. Each new lift must beat your last one."),
+                        Triple(Icons.Default.FitnessCenter, "Workouts", "Pick a plan, watch the exercise videos and tick off each exercise as you go."),
+                        Triple(Icons.Default.LocalFireDepartment, "Streaks", "Save your lifts or finish a workout every day to build your streak."),
+                        Triple(Icons.Default.History, "History", "See your personal records and how your rank grows over time.")
+                    )
+                    steps.forEach { (icon, title, description) ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            IconBadge(icon)
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(title, color = TextWhite, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(description, color = TextGray, fontSize = 14.sp, lineHeight = 20.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (page > 0) {
+                TextButton(onClick = { page -= 1 }) {
+                    Text("Back", color = TextGray)
+                }
+            } else {
+                Spacer(modifier = Modifier.width(1.dp))
+            }
+            Button(
+                onClick = { if (page == lastPage) onFinish(name.trim(), level) else page += 1 },
+                enabled = canContinue,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = PurpleAccent,
+                    disabledContainerColor = DarkCardElevated
+                ),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.height(52.dp).widthIn(min = 140.dp)
+            ) {
+                Text(
+                    if (page == lastPage) "Get Started" else "Next",
+                    color = if (canContinue) TextWhite else TextGray,
+                    fontWeight = FontWeight.SemiBold
+                )
             }
         }
     }
 }
 
+// Three buttons in a row to pick a fitness level
+@Composable
+fun LevelSelector(selected: String, onSelect: (String) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(DarkCardElevated)
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        fitnessLevels.forEach { option ->
+            val isSelected = selected == option
+            Button(
+                onClick = { onSelect(option) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isSelected) PurpleAccent else Color.Transparent
+                ),
+                elevation = null,
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 4.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    option,
+                    color = if (isSelected) TextWhite else TextGray,
+                    fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun ProfileDialog(
+    name: String,
+    level: String,
+    onSave: (name: String, level: String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var newName by remember { mutableStateOf(name) }
+    var newLevel by remember { mutableStateOf(level.ifEmpty { "Casual" }) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = DarkCardColor,
+        shape = RoundedCornerShape(24.dp),
+        title = { Text("Edit profile", color = TextWhite, fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { if (it.length <= 20) newName = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    colors = appFieldColors(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Fitness level", color = TextGray, fontSize = 13.sp)
+                Spacer(modifier = Modifier.height(8.dp))
+                LevelSelector(selected = newLevel, onSelect = { newLevel = it })
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(newName.trim(), newLevel) },
+                enabled = newName.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = PurpleAccent,
+                    disabledContainerColor = DarkCardElevated
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("Save", color = TextWhite)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = TextGray) }
+        }
+    )
+}
+
+// ---------- Rank-up pop-up ----------
+@Composable
+fun RankUpDialog(rank: PowerRank, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = DarkCardColor,
+        shape = RoundedCornerShape(24.dp),
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = PurpleAccent),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth().height(48.dp)
+            ) {
+                Text("Let's go", color = TextWhite, fontWeight = FontWeight.SemiBold)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(110.dp)
+                        .clip(CircleShape)
+                        .background(DarkBackground)
+                        .border(3.dp, PurpleAccent, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(id = rankIcon(rank)),
+                        contentDescription = "${rank.name} rank icon",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                Spacer(modifier = Modifier.height(20.dp))
+                Text("RANK UP!", color = PurpleLight, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("You reached ${rank.name}", color = TextWhite, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("${rank.min} - ${rank.max} lbs total", color = TextGray, fontSize = 14.sp)
+            }
+        }
+    )
+}
+
 // ---------- Dashboard ----------
 @Composable
-fun DashboardUi(totalLifts: Int, onOpenWorkouts: () -> Unit) {
+fun DashboardUi(
+    totalLifts: Int,
+    dayStreak: Int,
+    bestLift: Pair<String, Int>?,
+    profileName: String,
+    fitnessLevel: String,
+    onEditProfile: () -> Unit,
+    onOpenWorkouts: () -> Unit
+) {
     val rank = rankFor(totalLifts)
     val nextRank = nextRankFor(totalLifts)
     val progress = rankProgress(totalLifts)
@@ -227,7 +751,49 @@ fun DashboardUi(totalLifts: Int, onOpenWorkouts: () -> Unit) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 20.dp)
     ) {
-        Text("Project Power", color = TextWhite, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Welcome back, $profileName",
+                        color = TextGray, fontSize = 14.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (fitnessLevel.isNotBlank()) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            fitnessLevel.uppercase(),
+                            color = PurpleLight, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(PurpleAccent.copy(alpha = 0.15f))
+                                .padding(horizontal = 6.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+                Text("Project Power", color = TextWhite, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+            }
+            // Tap your initial to edit your profile
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(PurpleAccent.copy(alpha = 0.2f))
+                    .border(1.dp, PurpleAccent, CircleShape)
+                    .clickable { onEditProfile() },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    profileName.trim().firstOrNull()?.uppercase() ?: "?",
+                    color = PurpleLight, fontSize = 18.sp, fontWeight = FontWeight.Bold
+                )
+            }
+        }
 
         Spacer(modifier = Modifier.height(20.dp))
 
@@ -299,12 +865,16 @@ fun DashboardUi(totalLifts: Int, onOpenWorkouts: () -> Unit) {
         Spacer(modifier = Modifier.height(12.dp))
 
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min), // keeps the 3 tiles the same height
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            StatTile(Modifier.weight(1f), Icons.Default.FitnessCenter, PurpleLight, "$totalLifts", "Total Lifts (lbs)")
-            StatTile(Modifier.weight(1f), Icons.Default.LocalFireDepartment, FlameOrange, "3", "Day Streak")
-            StatTile(Modifier.weight(1f), Icons.Default.Bolt, PurpleLight, "250", "Last Lift (lbs)")
+            StatTile(Modifier.weight(1f).fillMaxHeight(), Icons.Default.FitnessCenter, PurpleLight, "$totalLifts", "Total Lifts (lbs)")
+            StatTile(Modifier.weight(1f).fillMaxHeight(), Icons.Default.LocalFireDepartment, FlameOrange, "$dayStreak", "Day Streak")
+            StatTile(
+                Modifier.weight(1f).fillMaxHeight(), Icons.Default.Bolt, PurpleLight,
+                "${bestLift?.second ?: 0}", "Best Lift (lbs)",
+                subLabel = bestLift?.first ?: "None yet" // Bench, Deadlift or Squat
+            )
         }
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -409,28 +979,55 @@ fun QuoteOfTheDayCard() {
 }
 
 @Composable
-fun StatTile(modifier: Modifier, icon: ImageVector, tint: Color, value: String, label: String) {
+fun StatTile(modifier: Modifier, icon: ImageVector, tint: Color, value: String, label: String, subLabel: String? = null) {
     AppCard(modifier = modifier) {
         Column(modifier = Modifier.padding(14.dp)) {
             IconBadge(icon, tint, size = 36)
             Spacer(modifier = Modifier.height(12.dp))
             Text(value, color = TextWhite, fontSize = 22.sp, fontWeight = FontWeight.Bold)
             Text(label, color = TextGray, fontSize = 11.sp)
+            if (subLabel != null) {
+                Text(subLabel, color = PurpleLight, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            }
         }
     }
 }
 
 // Quest board
 @Composable
-fun QuestBoardUi(onSave: (Int) -> Unit) {
-    var savedSnapshot by remember { mutableIntStateOf(-1) }
+fun QuestBoardUi(lastLifts: LiftEntry?, onSave: (bench: Int, deadlift: Int, squat: Int) -> Unit) {
+    var saved by remember { mutableStateOf(false) }
     var benchPressInput by remember { mutableStateOf("") }
     var deadliftInput by remember { mutableStateOf("") }
     var squatInput by remember { mutableStateOf("") }
 
-    val total = (benchPressInput.toIntOrNull() ?: 0) +
-            (deadliftInput.toIntOrNull() ?: 0) +
-            (squatInput.toIntOrNull() ?: 0)
+    // Your last saved lifts
+    val lastBench = lastLifts?.bench ?: 0
+    val lastDeadlift = lastLifts?.deadlift ?: 0
+    val lastSquat = lastLifts?.squat ?: 0
+
+
+    val newBench = benchPressInput.toIntOrNull()
+    val newDeadlift = deadliftInput.toIntOrNull()
+    val newSquat = squatInput.toIntOrNull()
+
+    val benchError = newBench != null && newBench <= lastBench
+    val deadliftError = newDeadlift != null && newDeadlift <= lastDeadlift
+    val squatError = newSquat != null && newSquat <= lastSquat
+
+    val benchImproved = newBench != null && !benchError
+    val deadliftImproved = newDeadlift != null && !deadliftError
+    val squatImproved = newSquat != null && !squatError
+
+
+    val bench = if (newBench != null && !benchError) newBench else lastBench
+    val deadlift = if (newDeadlift != null && !deadliftError) newDeadlift else lastDeadlift
+    val squat = if (newSquat != null && !squatError) newSquat else lastSquat
+    val total = bench + deadlift + squat
+
+
+    val canSave = (benchImproved || deadliftImproved || squatImproved) &&
+            !(benchError || deadliftError || squatError)
 
     Column(
         modifier = Modifier
@@ -438,20 +1035,20 @@ fun QuestBoardUi(onSave: (Int) -> Unit) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 20.dp)
     ) {
-        ScreenHeader("Quest Board", "Log your big 3 lifts to calculate your rank")
+        ScreenHeader("Quest Board", "Beat your last lift to save a new record")
 
         AppCard(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(20.dp)) {
                 Text("Power Ranking Inputs", color = PurpleLight, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(16.dp))
 
-                LiftField("Bench Press (lbs)", benchPressInput) { benchPressInput = it }
-                Spacer(modifier = Modifier.height(12.dp))
-                LiftField("Deadlift (lbs)", deadliftInput) { deadliftInput = it }
-                Spacer(modifier = Modifier.height(12.dp))
-                LiftField("Back Squat (lbs)", squatInput) { squatInput = it }
+                LiftField("Bench Press (lbs)", benchPressInput, lastBench, benchError) { benchPressInput = it; saved = false }
+                Spacer(modifier = Modifier.height(4.dp))
+                LiftField("Deadlift (lbs)", deadliftInput, lastDeadlift, deadliftError) { deadliftInput = it; saved = false }
+                Spacer(modifier = Modifier.height(4.dp))
+                LiftField("Back Squat (lbs)", squatInput, lastSquat, squatError) { squatInput = it; saved = false }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
                 Row(
                     modifier = Modifier
@@ -482,13 +1079,16 @@ fun QuestBoardUi(onSave: (Int) -> Unit) {
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                val justSaved = total > 0 && savedSnapshot == total
                 Button(
                     onClick = {
-                        onSave(total)
-                        savedSnapshot = total
+                        onSave(bench, deadlift, squat)
+                        // Clear the boxes: the saved numbers are now your "last" lifts
+                        benchPressInput = ""
+                        deadliftInput = ""
+                        squatInput = ""
+                        saved = true
                     },
-                    enabled = total > 0,
+                    enabled = canSave,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = PurpleAccent,
                         disabledContainerColor = DarkCardElevated
@@ -496,13 +1096,13 @@ fun QuestBoardUi(onSave: (Int) -> Unit) {
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                     shape = RoundedCornerShape(14.dp)
                 ) {
-                    if (justSaved) {
+                    if (saved) {
                         Icon(Icons.Default.Check, contentDescription = null, tint = TextWhite)
                         Spacer(modifier = Modifier.width(8.dp))
                     }
                     Text(
-                        if (justSaved) "Saved" else "Save Power Lifts",
-                        color = if (total > 0) TextWhite else TextGray,
+                        if (saved) "Saved" else "Save Power Lifts",
+                        color = if (canSave || saved) TextWhite else TextGray,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -512,12 +1112,29 @@ fun QuestBoardUi(onSave: (Int) -> Unit) {
 }
 
 @Composable
-fun LiftField(label: String, value: String, onChange: (String) -> Unit) {
+fun LiftField(
+    label: String,
+    value: String,
+    lastValue: Int,
+    isError: Boolean,
+    onChange: (String) -> Unit
+) {
     OutlinedTextField(
         value = value,
         onValueChange = { input -> onChange(input.filter { it.isDigit() }) },
         label = { Text(label) },
         singleLine = true,
+        isError = isError,
+        supportingText = {
+            Text(
+                when {
+                    isError && lastValue > 0 -> "Must be higher than your last lift: $lastValue lbs"
+                    isError -> "Enter more than 0 lbs"
+                    lastValue > 0 -> "Last saved: $lastValue lbs"
+                    else -> "No lift saved yet"
+                }
+            )
+        },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         shape = RoundedCornerShape(14.dp),
         colors = OutlinedTextFieldDefaults.colors(
@@ -527,7 +1144,14 @@ fun LiftField(label: String, value: String, onChange: (String) -> Unit) {
             unfocusedLabelColor = TextGray,
             focusedTextColor = TextWhite,
             unfocusedTextColor = TextWhite,
-            cursorColor = PurpleLight
+            cursorColor = PurpleLight,
+            focusedSupportingTextColor = TextGray,
+            unfocusedSupportingTextColor = TextGray,
+            errorBorderColor = ErrorRed,
+            errorLabelColor = ErrorRed,
+            errorTextColor = TextWhite,
+            errorCursorColor = ErrorRed,
+            errorSupportingTextColor = ErrorRed
         ),
         modifier = Modifier.fillMaxWidth()
     )
@@ -535,9 +1159,10 @@ fun LiftField(label: String, value: String, onChange: (String) -> Unit) {
 
 // Workouts
 @Composable
-fun PreSavedWorkoutUi() {
+fun PreSavedWorkoutUi(onWorkoutFinished: () -> Unit, defaultDifficulty: String = "Medium") {
+    val context = LocalContext.current
     var selectedWorkoutTitle by remember { mutableStateOf<String?>(null) }
-    var selectedDifficulty by remember { mutableStateOf("Medium") }
+    var selectedDifficulty by remember { mutableStateOf(defaultDifficulty) }
 
     if (selectedWorkoutTitle == null) {
         val workoutPlans = listOf(
@@ -572,9 +1197,11 @@ fun PreSavedWorkoutUi() {
         }
     } else {
         val exercises = getExercisesForWorkout(selectedWorkoutTitle!!, selectedDifficulty)
-        // Which exercise's video is showing (resets when the workout or difficulty changes)
+        // Which exercise's video is showing
         var selectedExerciseIndex by remember(selectedWorkoutTitle, selectedDifficulty) { mutableIntStateOf(0) }
         val currentExercise = exercises[selectedExerciseIndex.coerceIn(0, exercises.lastIndex)].first
+        // Exercises you have ticked off
+        var doneSet by remember(selectedWorkoutTitle, selectedDifficulty) { mutableStateOf(setOf<Int>()) }
 
         Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -634,11 +1261,12 @@ fun PreSavedWorkoutUi() {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("Routine", color = TextWhite, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        Text("${exercises.size} exercises - tap to watch", color = TextGray, fontSize = 13.sp)
+                        Text("${doneSet.size}/${exercises.size} done - tap to watch", color = TextGray, fontSize = 13.sp)
                     }
                 }
 
                 itemsIndexed(exercises) { index, (exerciseName, setsReps) ->
+                    val isDone = index in doneSet
                     AppCard(
                         modifier = Modifier.fillMaxWidth(),
                         onClick = { selectedExerciseIndex = index },
@@ -648,18 +1276,31 @@ fun PreSavedWorkoutUi() {
                             modifier = Modifier.padding(14.dp).fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            // Tap the circle to tick the exercise off
                             Box(
                                 modifier = Modifier
-                                    .size(32.dp)
+                                    .size(36.dp)
                                     .clip(CircleShape)
-                                    .background(PurpleAccent.copy(alpha = 0.2f)),
+                                    .background(if (isDone) PurpleAccent else PurpleAccent.copy(alpha = 0.2f))
+                                    .clickable { doneSet = if (isDone) doneSet - index else doneSet + index },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text("${index + 1}", color = PurpleLight, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                if (isDone) {
+                                    Icon(
+                                        Icons.Default.Check, contentDescription = "Done",
+                                        tint = TextWhite, modifier = Modifier.size(20.dp)
+                                    )
+                                } else {
+                                    Text("${index + 1}", color = PurpleLight, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(exerciseName, color = TextWhite, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    exerciseName,
+                                    color = if (isDone) TextGray else TextWhite,
+                                    fontSize = 15.sp, fontWeight = FontWeight.SemiBold
+                                )
                                 Text(setsReps, color = TextGray, fontSize = 12.sp)
                             }
                         }
@@ -668,14 +1309,29 @@ fun PreSavedWorkoutUi() {
 
                 item {
                     Button(
-                        onClick = { /* Design only */ },
-                        colors = ButtonDefaults.buttonColors(containerColor = PurpleAccent),
+                        onClick = {
+                            onWorkoutFinished()
+                            Toast.makeText(context, "Workout complete! Streak updated", Toast.LENGTH_SHORT).show()
+                            doneSet = emptySet()
+                        },
+                        enabled = doneSet.isNotEmpty(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PurpleAccent,
+                            disabledContainerColor = DarkCardElevated
+                        ),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth().height(52.dp)
                     ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = TextWhite)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Start Workout", color = TextWhite, fontWeight = FontWeight.SemiBold)
+                        if (doneSet.isNotEmpty()) {
+                            Icon(Icons.Default.Check, contentDescription = null, tint = TextWhite)
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
+                        Text(
+                            if (doneSet.isEmpty()) "Tick exercises to finish"
+                            else "Finish Workout (${doneSet.size}/${exercises.size})",
+                            color = if (doneSet.isEmpty()) TextGray else TextWhite,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
             }
@@ -926,9 +1582,166 @@ fun ExerciseVideoPlayer(exerciseName: String) {
     }
 }
 
+// Personal records
+@Composable
+fun PersonalRecordsCard(history: List<LiftEntry>) {
+    val latest = history.lastOrNull()
+    val earlier = history.dropLast(1)
+
+    AppCard(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(20.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconBadge(Icons.Default.EmojiEvents, size = 36)
+                Spacer(modifier = Modifier.width(12.dp))
+                Text("Personal Records", color = TextWhite, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+
+            if (latest == null) {
+                Text(
+                    "Save your lifts on the Quest Board to set your first records.",
+                    color = TextGray, fontSize = 13.sp
+                )
+            } else {
+                // A lift is a "new PR" when your latest save beats everything saved before it
+                RecordRow("Bench Press", history.maxOf { it.bench },
+                    earlier.isNotEmpty() && latest.bench > earlier.maxOf { it.bench })
+                Spacer(modifier = Modifier.height(12.dp))
+                RecordRow("Deadlift", history.maxOf { it.deadlift },
+                    earlier.isNotEmpty() && latest.deadlift > earlier.maxOf { it.deadlift })
+                Spacer(modifier = Modifier.height(12.dp))
+                RecordRow("Back Squat", history.maxOf { it.squat },
+                    earlier.isNotEmpty() && latest.squat > earlier.maxOf { it.squat })
+            }
+        }
+    }
+}
+
+@Composable
+fun RecordRow(label: String, best: Int, isNewPr: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(DarkCardElevated)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = TextGray, fontSize = 14.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (isNewPr) {
+                Text(
+                    "NEW PR",
+                    color = FlameOrange, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(FlameOrange.copy(alpha = 0.15f))
+                        .padding(horizontal = 6.dp, vertical = 3.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+            }
+            Text("$best lbs", color = TextWhite, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+// Rank progress
+@Composable
+fun RankProgressCard(history: List<LiftEntry>) {
+    val shown = history.takeLast(7)
+
+
+    val promotions = history.mapIndexedNotNull { i, entry ->
+        val now = rankIndexFor(entry.total)
+        val before = if (i == 0) -1 else rankIndexFor(history[i - 1].total)
+        if (now > before) Pair(powerRanks[now].name, entry.day) else null
+    }.takeLast(2).reversed()
+
+    AppCard(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(20.dp)) {
+            Text("Rank Progress", color = TextWhite, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(4.dp))
+
+            if (shown.isEmpty()) {
+                Text(
+                    "Your total over time will appear here after your first save.",
+                    color = TextGray, fontSize = 13.sp
+                )
+            } else {
+                Text("Total (lbs) from your last ${shown.size} saves", color = TextGray, fontSize = 12.sp)
+                Spacer(modifier = Modifier.height(20.dp))
+
+                val maxTotal = shown.maxOf { it.total }.coerceAtLeast(1)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(150.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    shown.forEachIndexed { index, entry ->
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Bottom
+                        ) {
+                            Text("${entry.total}", color = TextGray, fontSize = 10.sp)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Box(
+                                modifier = Modifier
+                                    .width(24.dp)
+                                    .height(maxOf(4f, 100f * entry.total / maxTotal).dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (index == shown.lastIndex) PurpleAccent else DarkCardElevated)
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                formatDay(entry.day),
+                                color = if (index == shown.lastIndex) PurpleLight else TextGray,
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
+                }
+
+                if (promotions.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    promotions.forEach { (rankName, day) ->
+                        Row(
+                            modifier = Modifier.padding(top = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.ArrowUpward, contentDescription = null,
+                                tint = PurpleLight, modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Reached $rankName", color = TextWhite, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(formatDay(day), color = TextGray, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ---------- History ----------
 @Composable
-fun ProgressHistoryUi() {
+fun ProgressHistoryUi(
+    history: List<LiftEntry>,
+    workoutsDone: Int,
+    dayStreak: Int,
+    activity: Map<Long, Int>
+) {
+
+    val today = todayEpochDay()
+    val todayIndex = ((today + 3) % 7).toInt()
+    val weekStart = today - todayIndex
+    val counts = List(7) { activity[weekStart + it] ?: 0 }
+    val maxCount = (counts.maxOrNull() ?: 1).coerceAtLeast(1)
+    val days = listOf("M", "T", "W", "T", "F", "S", "S")
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -941,19 +1754,23 @@ fun ProgressHistoryUi() {
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            StatTile(Modifier.weight(1f), Icons.Default.CalendarMonth, PurpleLight, "5", "Workouts")
-            StatTile(Modifier.weight(1f), Icons.Default.LocalFireDepartment, FlameOrange, "3", "Day Streak")
+            StatTile(Modifier.weight(1f), Icons.Default.CalendarMonth, PurpleLight, "$workoutsDone", "Workouts")
+            StatTile(Modifier.weight(1f), Icons.Default.LocalFireDepartment, FlameOrange, "$dayStreak", "Day Streak")
         }
+
+        Spacer(modifier = Modifier.height(16.dp))
+        PersonalRecordsCard(history)
+
+        Spacer(modifier = Modifier.height(16.dp))
+        RankProgressCard(history)
 
         Spacer(modifier = Modifier.height(16.dp))
 
         AppCard(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(20.dp)) {
                 Text("Weekly Activity", color = TextWhite, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text("Workouts finished + lift saves per day", color = TextGray, fontSize = 12.sp)
                 Spacer(modifier = Modifier.height(20.dp))
-
-                val heights = listOf(0.4f, 0.9f, 0.5f, 0.8f, 0.3f, 0.7f, 1.0f)
-                val days = listOf("M", "T", "W", "T", "F", "S", "S")
 
                 Row(
                     modifier = Modifier.fillMaxWidth().height(140.dp),
@@ -961,23 +1778,28 @@ fun ProgressHistoryUi() {
                     verticalAlignment = Alignment.Bottom
                 ) {
                     days.forEachIndexed { index, day ->
+                        val count = counts[index]
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Bottom
                         ) {
+                            if (count > 0) {
+                                Text("$count", color = TextGray, fontSize = 10.sp)
+                                Spacer(modifier = Modifier.height(4.dp))
+                            }
                             Box(
                                 modifier = Modifier
                                     .width(24.dp)
-                                    .height((110 * heights[index]).dp)
+                                    .height(if (count == 0) 6.dp else maxOf(10f, 90f * count / maxCount).dp)
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(if (index == 6) PurpleAccent else DarkCardElevated)
+                                    .background(if (index == todayIndex) PurpleAccent else DarkCardElevated)
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
                                 day,
-                                color = if (index == 6) PurpleLight else TextGray,
+                                color = if (index == todayIndex) PurpleLight else TextGray,
                                 fontSize = 12.sp,
-                                fontWeight = if (index == 6) FontWeight.Bold else FontWeight.Normal
+                                fontWeight = if (index == todayIndex) FontWeight.Bold else FontWeight.Normal
                             )
                         }
                     }
@@ -991,4 +1813,10 @@ fun ProgressHistoryUi() {
 @Composable
 fun AppPreview() {
     AppUiShell()
+}
+
+@Preview(showBackground = true)
+@Composable
+fun OnboardingPreview() {
+    OnboardingUi(onFinish = { _, _ -> })
 }
